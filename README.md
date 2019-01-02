@@ -43,4 +43,5 @@ Parameters:
 ...
 
   RoleName:
+  
     Default: CF-QualysAWSConnectorRole
