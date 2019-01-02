@@ -6,14 +6,18 @@ To run the script you will need to supply credentials for the
 Qualys user name, password, and Qualys API endpoint URL for API access to Qualys Cloud View.
 
 Parameters:
+
   UserName:
+  
     Default: {supply_Qualys_user_name}
 ...
 
   Password:
+  
     Default: {supply_Qualys_user_password}
 
   BaseUrl:
+  
     Default: Qualys API URL for Cloud View API endpoint. See https://www.qualys.com/docs/qualys-cloud-view-user-guide.pdf page 27
 
 # External ID
@@ -30,7 +34,7 @@ Parameters:
 
     Type: String
 
-#Role Name
+# Role Name
 If you want to change the Role name you can edit these settings in line number 27
 
 Parameters:
