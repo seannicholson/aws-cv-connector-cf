@@ -28,6 +28,7 @@ Parameters:
 ...
 
   ExternalId:
+  
     Default: Empty
 
     Description: Specify a unique number from 9-90 digits, or one will be generated for you
