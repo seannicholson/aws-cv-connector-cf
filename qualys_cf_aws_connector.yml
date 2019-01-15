@@ -3,20 +3,11 @@ Description: Template to automatically setup Qualys AWS Connector for Asset Scan
 Metadata:
   Author: "Sean Nicholson"
   Version: "1.0"
-  Updated: "01/02/2019"
-  Version Comments: "Initial release, based off https://github.com/snicholson-qualys/aws-ec2-cloudformation-connector"
+  Updated: "01/15/2019"
+  Version Comments: "New branch release to include AWS Secrets Manager, based off https://github.com/snicholson-qualys/aws-cv-connector-cf"
 Parameters:
-  UserName:
-    Default: {supply_Qualys_user_name}
-    Description: User Authorized to Create a Qualys AWS Connector
-    Type: String
-  Password:
-    Default: {supply_Qualys_user_password}
-    Description: Password of the User Authorized to Create an Qualys AWS Connector
-    Type: String
-    NoEcho: true
   BaseUrl:
-    Default: {Qualys Cloud View API URL - see readme}
+    Default: <ENTER QUALYS API URL FOR CLOUDVIEW>
     Description: Base URL of the Qualys Cloud View API Server
     Type: String
   ExternalId:
@@ -27,7 +18,16 @@ Parameters:
     Default: CF-QualysAWSConnectorRole
     Description: Name of the Role to Create
     Type: String
+  SecretQAPI:
+    Default: <ENTER SECRET NAME>
+    Description: Secrets Manager - Secret Name
+    Type: String
+  SecretRegion:
+    Default: <ENTER REGION FOR SECRET>
+    Description: Secrets Manager - Region where secret is stored
+    Type: String
 Resources:
+
   ConnectorFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -35,9 +35,9 @@ Resources:
         Variables:
           BASEURL: !Ref BaseUrl
           EXTERNALID: !Ref ExternalId
-          USERNAME: !Ref UserName
-          PASSWORD: !Ref Password
           ROLENAME: !Ref RoleName
+          SECRETNAME: !Ref SecretQAPI
+          SECRETREGION: !Ref SecretRegion
       Code:
         ZipFile: !Sub |
           import json
@@ -47,73 +47,86 @@ Resources:
           import cfnresponse
           from random import randint
           import time
+          import base64
+          import boto3
+          from botocore.exceptions import ClientError
+          from ast import literal_eval
 
-          def lambda_handler(event,context):
-              EXTERNALID = os.getenv('EXTERNALID')
-              ROLENAME = os.getenv('ROLENAME')
-
-              dataConnectorId = 12345678
-              qualysAccountId = 805950163170
-
+          def get_secret(secret_name, region_name):
+              # Create a Secrets Manager client
+              session = boto3.session.Session()
+              client = session.client(
+                  service_name='secretsmanager',
+                  region_name=region_name
+              )
               try:
-                api_endpoint="{}/cloudview-api/rest/1.5/aws/connectors".format(os.getenv('BASEURL'))
-                ACCOUNT_ID = context.invoked_function_arn.split(":")[4]
-                EXTERNALID = randint(1000000000000000000,999999999999999999999999999999999) if EXTERNALID == "Empty" else EXTERNALID
-                print("API_ENDPOINT: {}".format(api_endpoint))
-                print("ACCOUNT_ID: {}".format(ACCOUNT_ID))
-                print("EXTERNALID: {}".format(EXTERNALID))
-
-                data= {
-                    "arn":"arn:aws:iam::{}:role/{}".format(ACCOUNT_ID, ROLENAME),
-                    "name":"CF_AWS_{}2".format(ACCOUNT_ID),
-                    "description": "Connector for AWS Account {} - Implemented with CloudFormation".format(ACCOUNT_ID),
-                    "externalId":"{}".format(EXTERNALID)
-                  }
-                auth=(os.getenv('USERNAME'), os.getenv('PASSWORD'))
-
-                print("DATA: {}".format(data))
-                print("AUTH: {}".format(auth))
-
-                headers = {"X-Requested-With": "Qualys CloudFormation (python)"}
-                headers['Accept'] = 'application/json'
-                headers['Content-Type'] = 'application/json'
-
-                r = requests.post(api_endpoint, json=data, auth=auth, headers=headers)
-                print("RESPONSE: {}".format(r))
-                data = r.json()
-                print("DATA: {}".format(data))
-
-
                 responseData = {}
-                if r.status_code == 200:
-                  responseData['responseCode'] = r.status_code
-
-                  if 'error' in data:
-                    if data['error']:
-                      responseData['responseErrorDetails'] = data['error']
-                      cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
-
-
-                  if 'connectorId' in data:
-                    DataConnectorId = data['connectorId']
-                    if 'qualysAccountId' in data:
-                      # qualysAccountId = record['qualysAccountId']
-                      # Hard code of Qualys Account ID
-                      qualysAccountId = 805950163170
-                print("ResponseData collection: {}".format(responseData))
-                callconnectorId = data['connectorId']
-
-
-
+                get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+                # Decrypts secret using the associated KMS CMK.
+                # Depending on whether the secret is a string or binary, one of these fields will be populated.
+                if 'SecretString' in get_secret_value_response:
+                  secret = get_secret_value_response['SecretString']
+                  return secret
+                else:
+                  decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
+                  return decoded_binary_secret
               except Exception as e:
                 traceback.print_exc()
                 responseData['responseErrorDetails'] = e
                 cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
 
-              responseData['DataConnectorId'] = DataConnectorId
-              responseData['AccountId'] = qualysAccountId
-              responseData['ExternalId'] = EXTERNALID
-              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+          def lambda_handler(event,context):
+            EXTERNALID = os.getenv('EXTERNALID')
+            ROLENAME = os.getenv('ROLENAME')
+            SECRETNAME = os.getenv('SECRETNAME')
+            SECRETREGION = os.getenv('SECRETREGION')
+            dataConnectorId = 12345678
+            qualysAccountId = 805950163170
+            responseData = {}
+            try:
+              secret_string = get_secret(SECRETNAME,SECRETREGION)
+              secret_dict = json.loads(secret_string)
+              api_endpoint="{}/cloudview-api/rest/1.5/aws/connectors".format(os.getenv('BASEURL'))
+              ACCOUNT_ID = context.invoked_function_arn.split(":")[4]
+              EXTERNALID = randint(1000000000000000000,999999999999999999999999999999999) if EXTERNALID == "Empty" else EXTERNALID
+              data= {
+              "arn":"arn:aws:iam::{}:role/{}".format(ACCOUNT_ID, ROLENAME),
+              "name":"CF_AWS_{}2".format(ACCOUNT_ID),
+              "description": "Connector for AWS Account {} - Implemented with CloudFormation".format(ACCOUNT_ID),
+              "externalId":"{}".format(EXTERNALID)
+              }
+              auth=(secret_dict['username'], secret_dict['password'])
+              print("DATA: {}".format(data))
+              headers = {"X-Requested-With": "Qualys CloudFormation (python)"}
+              headers['Accept'] = 'application/json'
+              headers['Content-Type'] = 'application/json'
+              r = requests.post(api_endpoint, json=data, auth=auth, headers=headers)
+              print("RESPONSE: {}".format(r))
+              data = r.json()
+              print("DATA: {}".format(data))
+
+              if r.status_code == 200:
+                responseData['responseCode'] = r.status_code
+                if 'error' in data:
+                  if data['error']:
+                    responseData['responseErrorDetails'] = data['error']
+                    cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+                if 'connectorId' in data:
+                  DataConnectorId = data['connectorId']
+                  if 'qualysAccountId' in data:
+                    # qualysAccountId = record['qualysAccountId']
+                    # Hard code of Qualys Account ID
+                    qualysAccountId = 805950163170
+              print("ResponseData collection: {}".format(responseData))
+              callconnectorId = data['connectorId']
+            except Exception as e:
+              traceback.print_exc()
+              responseData['responseErrorDetails'] = e
+              cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+            responseData['DataConnectorId'] = DataConnectorId
+            responseData['AccountId'] = qualysAccountId
+            responseData['ExternalId'] = EXTERNALID
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
 
       Description: Lambda Function to Register Qualys AWS Connector and Create associated Role
       Handler: index.lambda_handler
@@ -143,11 +156,15 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+
                 Resource: arn:aws:logs:*:*:*
               - Effect: Allow
                 Action:
                   - iam:CreateRole
                 Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+
   QualysConnectorRole:
     Type: AWS::IAM::Role
     Properties:
@@ -174,33 +191,59 @@ Resources:
       Environment:
         Variables:
           BASEURL: !Ref BaseUrl
-          USERNAME: !Ref UserName
-          PASSWORD: !Ref Password
+          SECRETNAME: !Ref SecretQAPI
+          SECRETREGION: !Ref SecretRegion
           CONNECTORID: !GetAtt 'CustomResource.DataConnectorId'
       Code:
         ZipFile: !Sub |
           import json
           import traceback
           import os
+          import boto3
           from botocore.vendored import requests
           import cfnresponse
 
 
+          def get_secret(secret_name, region_name):
+              # Create a Secrets Manager client
+              session = boto3.session.Session()
+              client = session.client(
+                  service_name='secretsmanager',
+                  region_name=region_name
+              )
+              try:
+                responseData = {}
+                get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+                # Decrypts secret using the associated KMS CMK.
+                # Depending on whether the secret is a string or binary, one of these fields will be populated.
+                if 'SecretString' in get_secret_value_response:
+                  secret = get_secret_value_response['SecretString']
+                  return secret
+                else:
+                  decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
+                  return decoded_binary_secret
+              except Exception as e:
+                traceback.print_exc()
+                responseData['responseErrorDetails'] = e
+                cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+
+
           def lambda_handler(event,context):
-              EXTERNALID = os.getenv('EXTERNALID')
-              ROLENAME = os.getenv('ROLENAME')
-              CONNECTORID = os.getenv('CONNECTORID')
+            CONNECTORID = os.getenv('CONNECTORID')
+            SECRETNAME = os.getenv('SECRETNAME')
+            SECRETREGION = os.getenv('SECRETREGION')
               responseData = {}
 
               try:
+                secret_string = get_secret(SECRETNAME,SECRETREGION)
+                secret_dict = json.loads(secret_string)
                 api_endpoint="{}/cloudview-api/rest/1.5/aws/connectors/run".format(os.getenv('BASEURL'))
                 data = {
                   "awsIds" : [
                   CONNECTORID
                   ]
                 }
-                auth=(os.getenv('USERNAME'), os.getenv('PASSWORD'))
-
+                auth=(secret_dict['username'], secret_dict['password'])
                 print("DATA: {}".format(data))
                 print("AUTH: {}".format(auth))
                 print("URL for run request {}".format(api_endpoint))
